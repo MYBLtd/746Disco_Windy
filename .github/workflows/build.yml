@@ -1,0 +1,51 @@
+name: Build
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Source ────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false   # shallow submodule init in the next step
+
+      - name: Init submodules (shallow)
+        run: git submodule update --init --depth 1
+
+      # ── 2. Toolchain ─────────────────────────────────────────────────
+      - name: Install ARM GCC toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
+          arm-none-eabi-gcc --version
+
+      # ── 3. Generate windy_img.h (offline – no live API calls) ────────
+      - name: Generate CI placeholder windy_img.h
+        run: python3 tools/gen_dummy_img.py
+
+      # ── 4. Build ─────────────────────────────────────────────────────
+      - name: Build firmware
+        run: make
+
+      # ── 5. Report size ───────────────────────────────────────────────
+      - name: Firmware size
+        run: arm-none-eabi-size build/display_test.elf
+
+      # ── 6. Upload artifacts ──────────────────────────────────────────
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          path: |
+            build/display_test.elf
+            build/display_test.hex
+            build/display_test.bin
+          if-no-files-found: error
