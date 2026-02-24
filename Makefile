@@ -2,12 +2,15 @@
 # Makefile – STM32F746G-DISCO display test
 #
 # Usage:
-#   make        # build
+#   make              # build
+#   make flash        # build + flash via ST-Link (st-flash)
+#   make flash FLASH_TOOL=openocd   # flash via OpenOCD instead
 #   make clean
 #
 # Prerequisites:
 #   arm-none-eabi-gcc (tested with 14.x)
 #   git submodule update --init --depth 1    (first clone only)
+#   st-flash  OR  openocd   (for 'make flash')
 ##########################################################################
 
 TARGET     = display_test
@@ -122,3 +125,19 @@ $(BUILD_DIR):
 clean:
 	@rm -rf $(BUILD_DIR)
 	@echo "Cleaned."
+
+# ── Flash ──────────────────────────────────────────────────────────
+# Default tool: st-flash (stlink).  Override with FLASH_TOOL=openocd.
+FLASH_TOOL ?= st-flash
+FLASH_ADDR  = 0x08000000
+
+.PHONY: flash
+
+flash: $(BUILD_DIR)/$(TARGET).bin
+ifeq ($(FLASH_TOOL),openocd)
+	openocd -f interface/stlink.cfg \
+	        -f target/stm32f7x.cfg \
+	        -c "program $(BUILD_DIR)/$(TARGET).elf verify reset exit"
+else
+	st-flash --reset write $< $(FLASH_ADDR)
+endif
