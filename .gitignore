@@ -9,9 +9,6 @@ Core/Inc/windy_img.h
 tools/windy_480x272.png
 tools/windy_480x272.bin
 
-# STM32CubeF7 library – cloned separately (see README)
-# ~/Projects/STM32CubeF7
-
 # Editors / OS
 .vscode/
 *.swp

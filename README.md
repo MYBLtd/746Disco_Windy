@@ -66,21 +66,20 @@ A Windy-style weather map centred on **56.460 °N, 13.592 °E** (Scania, souther
 
 ## Quick start
 
-### 1 – Clone + dependencies
+### 1 – Clone + submodules
 
 ```bash
 git clone https://github.com/MYBLtd/746Disco_Windy.git
 cd 746Disco_Windy
-
-# STM32CubeF7 HAL (needed only once)
-git clone --depth 1 https://github.com/STMicroelectronics/STM32CubeF7.git ~/Projects/STM32CubeF7
-git -C ~/Projects/STM32CubeF7 clone --depth 1 \
-    https://github.com/STMicroelectronics/stm32f7xx_hal_driver.git \
-    Drivers/STM32F7xx_HAL_Driver
-git -C ~/Projects/STM32CubeF7 clone --depth 1 \
-    https://github.com/STMicroelectronics/cmsis_device_f7.git \
-    Drivers/CMSIS/Device/ST/STM32F7xx
+git submodule update --init --depth 1
 ```
+
+This pulls two submodules into `Drivers/`:
+- `Drivers/STM32F7xx_HAL_Driver` — STM32F7 HAL driver
+- `Drivers/CMSIS/Device/ST/STM32F7xx` — CMSIS device headers
+
+The ARM CMSIS core headers (`core_cm7.h` etc.) are vendored directly in
+`Drivers/CMSIS/Include/` and require no separate download.
 
 ### 2 – Render the weather image
 

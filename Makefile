@@ -2,25 +2,21 @@
 # Makefile – STM32F746G-DISCO display test
 #
 # Usage:
-#   make                          # build with default CUBE_F7_PATH
-#   make CUBE_F7_PATH=/path/to/STM32CubeF7
+#   make        # build
 #   make clean
 #
 # Prerequisites:
 #   arm-none-eabi-gcc (tested with 14.x)
-#   STM32CubeF7 firmware package (HAL drivers + CMSIS)
+#   git submodule update --init --depth 1    (first clone only)
 ##########################################################################
 
 TARGET     = display_test
 BUILD_DIR  = build
 
-# ── STM32CubeF7 path ──────────────────────────────────────────────
-# Override on the command line if installed elsewhere.
-CUBE_F7_PATH ?= $(HOME)/Projects/STM32CubeF7
-
-HAL_DIR    = $(CUBE_F7_PATH)/Drivers/STM32F7xx_HAL_Driver
-CMSIS_DEV  = $(CUBE_F7_PATH)/Drivers/CMSIS/Device/ST/STM32F7xx
-CMSIS_CORE = $(CUBE_F7_PATH)/Drivers/CMSIS/Include
+# ── Driver paths (git submodules inside Drivers/) ─────────────────
+HAL_DIR    = Drivers/STM32F7xx_HAL_Driver
+CMSIS_DEV  = Drivers/CMSIS/Device/ST/STM32F7xx
+CMSIS_CORE = Drivers/CMSIS/Include
 
 # ── Toolchain ─────────────────────────────────────────────────────
 PREFIX  = arm-none-eabi-
