@@ -1,5 +1,7 @@
 # STM32F746G-DISCO Windy Display
 
+[![Build](https://github.com/MYBLtd/746Disco_Windy/actions/workflows/build.yml/badge.svg)](https://github.com/MYBLtd/746Disco_Windy/actions/workflows/build.yml)
+
 Live weather map for the **STM32F746G-DISCO** evaluation board, rendered on the
 onboard 480×272 TFT LCD.  Inspired by [Windy.com](https://www.windy.com/56.460/13.592?56.111,13.592,8).
 
