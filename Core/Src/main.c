@@ -1,17 +1,19 @@
 /**
  * @file  main.c
- * @brief STM32F746G-DISCO – Windy.com live weather display (Pad A)
+ * @brief STM32F746G-DISCO – IoT sensor tile display (Pad A)
  *
  * Boot sequence:
  *   1. HAL_Init + SystemClock_Config (216 MHz, PLLSAI 9.6 MHz for LTDC)
  *   2. SDRAM_Init (IS42S32400F, 16-bit bus)
- *   3. windy_display_init_sdram – copy Flash snapshot → SDRAM, start LTDC
+ *   3. windy_display_init_sdram – copy Flash snapshot → LCD_BUF_SNAP, start LTDC
  *   4. esp32_init + esp32_connect_wifi
- *   5. Image download loop (10-minute refresh):
- *        esp32_http_get_image → back buffer → flip → delay
+ *   5. Download windy_temp.bin → LCD_BUF_TEMP (show snap meanwhile)
+ *   6. Download windy_hum.bin  → LCD_BUF_HUM  (show temp meanwhile)
+ *   7. Alternation loop: flip T/RH every SENSOR_FLIP_MS;
+ *      re-download both every WEATHER_REFRESH_MS without display gaps.
  *
  * The server (Debian 12) runs tools/windy_render.py every 10 minutes via
- * a systemd timer and serves windy.bin over HTTP on IMAGE_PORT.
+ * a systemd timer and serves windy_temp.bin + windy_hum.bin over HTTP.
  * Edit IMAGE_HOST in weather_config.h to point at your server.
  */
 
@@ -25,13 +27,14 @@
 
 static void SystemClock_Config(void);
 static void show_status(const char *msg);
+static int  download(const char *path, uint32_t buf);
 
 int main(void)
 {
     HAL_Init();
     SystemClock_Config();
     dbg_uart_init();
-    dbg_puts("\r\n=== Windy Weather Display (Pad A) ===\r\n");
+    dbg_puts("\r\n=== Windy Sensor Tile Display (Pad A) ===\r\n");
 
     dbg_puts("[BOOT] SDRAM init...\r\n");
     if (SDRAM_Init() != HAL_OK) {
@@ -61,27 +64,62 @@ int main(void)
         }
     }
 
-    /* ── Image download loop ── */
-    for (;;) {
-        uint32_t back = windy_display_back_addr();
-        show_status("Downloading...");
-        dbg_printf("[IMG] Downloading to back buffer 0x%08lX\r\n", back);
+    /* ── Boot: show snapshot while downloading both views ── */
+    windy_display_set_addr(LCD_BUF_SNAP);
+    show_status("DL temp...");
+    download(IMAGE_PATH_TEMP, LCD_BUF_TEMP);
 
-        int rc = esp32_http_get_image(IMAGE_HOST, IMAGE_PORT, IMAGE_PATH,
-                                      back, 480U * 272U * 2U);
-        if (rc == 0) {
-            windy_display_flip();
-            show_status("OK");
-            dbg_puts("[IMG] Display updated\r\n");
-        } else {
-            show_status("Download failed");
-            dbg_puts("[IMG] Download failed, retrying in 30 s\r\n");
-            HAL_Delay(30000UL);
-            continue;
+    windy_display_set_addr(LCD_BUF_TEMP);
+    show_status("DL hum...");
+    download(IMAGE_PATH_HUM, LCD_BUF_HUM);
+
+    /* ── Alternation + 10-minute refresh loop ── */
+    int      showing_temp = 1;
+    uint32_t last_fetch   = HAL_GetTick();
+    uint32_t last_flip    = HAL_GetTick();
+    windy_display_set_addr(LCD_BUF_TEMP);
+    show_status("OK");
+
+    for (;;) {
+        HAL_Delay(500UL);
+
+        /* Flip between T and RH every SENSOR_FLIP_MS */
+        if (HAL_GetTick() - last_flip >= SENSOR_FLIP_MS) {
+            showing_temp = !showing_temp;
+            windy_display_set_addr(showing_temp ? LCD_BUF_TEMP : LCD_BUF_HUM);
+            last_flip = HAL_GetTick();
         }
 
-        HAL_Delay(WEATHER_REFRESH_MS);
+        /* Re-download both images every WEATHER_REFRESH_MS */
+        if (HAL_GetTick() - last_fetch >= WEATHER_REFRESH_MS) {
+            /* Download temp into LCD_BUF_TEMP while showing hum */
+            windy_display_set_addr(LCD_BUF_HUM);
+            show_status("DL temp...");
+            download(IMAGE_PATH_TEMP, LCD_BUF_TEMP);
+
+            /* Download hum into LCD_BUF_HUM while showing temp */
+            windy_display_set_addr(LCD_BUF_TEMP);
+            show_status("DL hum...");
+            download(IMAGE_PATH_HUM, LCD_BUF_HUM);
+
+            showing_temp  = 1;
+            last_fetch    = HAL_GetTick();
+            last_flip     = HAL_GetTick();
+            windy_display_set_addr(LCD_BUF_TEMP);
+            show_status("OK");
+        }
     }
+}
+
+/* ── Download helper ────────────────────────────────────────────────────── */
+static int download(const char *path, uint32_t buf)
+{
+    dbg_printf("[IMG] %s → 0x%08lX\r\n", path, buf);
+    int rc = esp32_http_get_image(IMAGE_HOST, IMAGE_PORT, path,
+                                  buf, 480U * 272U * 2U);
+    if (rc != 0)
+        dbg_printf("[IMG] FAILED rc=%d\r\n", rc);
+    return rc;
 }
 
 /* ── Status line: bottom-left corner of the currently displayed buffer ── */

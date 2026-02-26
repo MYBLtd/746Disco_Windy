@@ -26,12 +26,14 @@
 
 /* ── Image server (Pad A) ─────────────────────────────────────────── */
 /* Edit IMAGE_HOST to the LAN IP of your Debian 12 server.           */
-/* The server must serve windy.bin via HTTP on IMAGE_PORT.           */
-#define IMAGE_HOST   "172.20.2.5"   /* ← change to your server IP */
-#define IMAGE_PORT   8080
-#define IMAGE_PATH   "/windy.bin"
+/* The server serves windy_temp.bin and windy_hum.bin via HTTP.      */
+#define IMAGE_HOST      "172.20.2.5"   /* ← change to your server IP */
+#define IMAGE_PORT      8080
+#define IMAGE_PATH_TEMP "/windy_temp.bin"
+#define IMAGE_PATH_HUM  "/windy_hum.bin"
 
-/* ── Refresh interval ────────────────────────────────────────────── */
-#define WEATHER_REFRESH_MS   (10UL * 60UL * 1000UL)   /* 10 minutes */
+/* ── Refresh / flip intervals ────────────────────────────────────── */
+#define WEATHER_REFRESH_MS   (10UL * 60UL * 1000UL)   /* 10 minutes  */
+#define SENSOR_FLIP_MS       5000UL                    /* T/RH flip   */
 
 #endif /* WEATHER_CONFIG_H */

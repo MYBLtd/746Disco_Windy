@@ -22,11 +22,12 @@
 #include <stdint.h>
 #include "weather_data.h"
 
-/* Base address of IS42S32400F SDRAM (FMC Bank 1) */
-#define LCD_FRAME_BUFFER  0xC0000000UL
-
-/* Back framebuffer for double-buffering (261 120 B after the front buffer) */
-#define LCD_BACK_BUFFER   (LCD_FRAME_BUFFER + 480U * 272U * 2U)
+/* ── SDRAM framebuffers (IS42S32400F, 8 MB @ 0xC0000000) ─────────────────── */
+/* Each buffer: 480 × 272 × 2 = 261 120 B = 0x3FC00 B                        */
+#define LCD_BUF_SNAP  0xC0000000UL   /* boot Flash snapshot (copy of windy_img[]) */
+#define LCD_BUF_TEMP  0xC003FC00UL   /* temperature view                          */
+#define LCD_BUF_HUM   0xC007F800UL   /* humidity view                             */
+/* Total: 3 × 261 120 = 783 360 B ≈ 766 KB (well within 8 MB)                */
 
 /**
  * @brief  Initialise LTDC + GPIO and show the embedded weather image
@@ -51,7 +52,7 @@ int windy_display_init_sdram(void);
  */
 void windy_display_update_panel(const WeatherData *wd);
 
-/* ── Double-buffer API ───────────────────────────────────────────────────── */
+/* ── Buffer-switching API ────────────────────────────────────────────────── */
 
 /**
  * @brief  Address currently displayed by LTDC (the "front" buffer).
@@ -64,9 +65,14 @@ uint32_t windy_display_front_addr(void);
 uint32_t windy_display_back_addr(void);
 
 /**
- * @brief  Swap front and back buffers.
- *         Uses HAL_LTDC_SetAddress() which updates on the next VSYNC,
- *         preventing display tearing.
+ * @brief  Point LTDC at an arbitrary SDRAM buffer (LCD_BUF_SNAP/TEMP/HUM).
+ *         Uses HAL_LTDC_SetAddress() → update on next VSYNC, no tearing.
+ */
+void windy_display_set_addr(uint32_t addr);
+
+/**
+ * @brief  Swap between SNAP and TEMP buffers (legacy helper, not used by
+ *         the dual-image main loop).
  */
 void windy_display_flip(void);
 

@@ -7,26 +7,30 @@ Renders a Windy.com-style weather map for the STM32F746G-DISCO (480×272 RGB565)
 Data sources (no API key needed):
   Map tiles   – OpenStreetMap tile CDN
   Weather     – Open-Meteo public forecast API
+  Sensors     – Home Assistant REST API (config in ha_config.py)
 
-Target coordinates taken from:
-  https://www.windy.com/56.460/13.592?56.111,13.592,8
+Target coordinates:
   Forecast pin : 56.460 N, 13.592 E  (Scania, southern Sweden)
-  Map centre   : 56.111 N, 13.592 E  (zoomed to show regional context)
+  Map centre   : 56.460 N, 13.592 E
 
-Outputs
-  windy_480x272.png        – preview (open in any viewer)
-  ../Core/Inc/windy_img.h  – C header with uint16_t array for firmware
-  windy_480x272.bin        – raw little-endian RGB565 (for SD-card loading)
+Outputs (two paired files – temperature view and humidity view):
+  windy_temp.png / windy_hum.png    – PNG preview
+  windy_temp.bin / windy_hum.bin    – raw little-endian RGB565 for firmware
+  ../Core/Inc/windy_img.h           – C header (temperature view, for boot snapshot)
 
-Run:
+Run (dev machine – generates all outputs including C header):
   cd tools/
   pip3 install -r requirements.txt
   python3 windy_render.py
+
+Run (server – skip C header):
+  python3 windy_render.py --no-header
 """
 
 import argparse
 import math
 import struct
+import sys
 import time
 import os
 import datetime
@@ -39,9 +43,9 @@ from io import BytesIO
 
 PIN_LAT   = 56.460   # forecast pin latitude
 PIN_LON   = 13.592   # forecast pin longitude
-MAP_LAT   = 56.460   # map-centre latitude  (adjusted to keep pin centred)
+MAP_LAT   = 56.460   # map-centre latitude
 MAP_LON   = 13.592   # map-centre longitude
-ZOOM      = 9        # tile zoom  (9 gives ~80 km wide at this latitude)
+ZOOM      = 9        # tile zoom (~80 km wide at this latitude)
 
 WIDTH     = 480
 HEIGHT    = 272
@@ -49,6 +53,18 @@ TILE_SIZE = 256
 
 PANEL_W   = 150      # left data-panel width in pixels
 TILE_ATTR = "© OpenStreetMap contributors"
+
+# ── Sensor tile grid geometry ────────────────────────────────────────────────
+# Tile area: x=150..479 (330 px wide), y=0..209 (210 px tall)
+
+TILE_COLS   = 4
+TILE_ROWS   = 4
+TILE_AREA_X = PANEL_W            # 150
+TILE_AREA_Y = 0
+TILE_AREA_W = WIDTH - PANEL_W    # 330
+TILE_AREA_H = 210
+TILE_W = TILE_AREA_W // TILE_COLS   # 82
+TILE_H = TILE_AREA_H // TILE_ROWS   # 52
 
 # ── Tile maths ───────────────────────────────────────────────────────────────
 
@@ -208,18 +224,120 @@ def _dir_arrow(deg):
     arrows = "↑↗→↘↓↙←↖"
     return arrows[round(deg / 45) % 8]
 
-# ── Wind-field overlay ───────────────────────────────────────────────────────
+# ── Temperature / Humidity colour coding ─────────────────────────────────────
+
+def temp_color(t):
+    """RGB colour for a temperature value (°C)."""
+    if t is None:  return (100, 100, 100)
+    if t < 12:     return ( 50, 100, 255)   # blue   (cold)
+    if t < 18:     return (  0, 200, 220)   # cyan   (cool)
+    if t < 22:     return ( 60, 190,  60)   # green  (comfortable)
+    if t < 26:     return (255, 155,  30)   # orange (warm)
+    return                 (220,  50,  50)  # red    (hot)
+
+def hum_color(h):
+    """RGB colour for a relative humidity value (%)."""
+    if h is None:  return (100, 100, 100)
+    if h < 30:     return (255, 155,  30)   # orange (too dry)
+    if h < 40:     return (220, 210,   0)   # yellow (dry)
+    if h < 60:     return ( 60, 190,  60)   # green  (comfortable)
+    if h < 70:     return (  0, 200, 220)   # cyan   (humid)
+    return                 ( 50, 100, 255)  # blue   (very humid)
+
+# ── Home Assistant sensor fetch ───────────────────────────────────────────────
+
+def fetch_ha_sensors(rooms, ha_url, ha_token):
+    """Fetch temperature and humidity from HA REST API for each room.
+
+    Returns a list parallel to `rooms`: each entry is
+    {'name', 'temp', 'hum'} or None for empty grid slots.
+    """
+    headers = {
+        "Authorization": f"Bearer {ha_token}",
+        "Content-Type": "application/json",
+    }
+
+    def _get(entity_id):
+        url = f"{ha_url}/api/states/{entity_id}"
+        try:
+            r = _SESSION.get(url, headers=headers, timeout=5)
+            r.raise_for_status()
+            return float(r.json()["state"])
+        except Exception as e:
+            print(f"  [warn] HA {entity_id}: {e}")
+            return None
+
+    result = []
+    for room in rooms:
+        if room is None:
+            result.append(None)
+            continue
+        temp = _get(room["temp_entity"])
+        hum  = _get(room["hum_entity"])
+        print(f"  {room['name']:10s}  T={temp}  RH={hum}")
+        result.append({"name": room["name"], "temp": temp, "hum": hum})
+    return result
+
+# ── Sensor tile grid ─────────────────────────────────────────────────────────
+
+def draw_sensor_tiles(draw, sensors, mode):
+    """Draw 4×4 grid of coloured sensor tiles in the map area (x=150..479, y=0..209).
+
+    mode: 'temp' for temperature view, 'hum' for humidity view.
+    Empty grid cells (sensors[i] is None) get a dark placeholder tile.
+    """
+    fnt_name = ImageFont.load_default(size=9)
+    fnt_val  = ImageFont.load_default(size=20)
+    fnt_unit = ImageFont.load_default(size=8)
+    GREY = (130, 135, 160)
+
+    for idx in range(TILE_COLS * TILE_ROWS):
+        col = idx % TILE_COLS
+        row = idx // TILE_COLS
+        tx = TILE_AREA_X + col * TILE_W
+        ty = TILE_AREA_Y + row * TILE_H
+
+        # Dark tile background (1 px gap between tiles)
+        draw.rectangle([(tx, ty), (tx + TILE_W - 2, ty + TILE_H - 2)],
+                       fill=(8, 12, 28, 200))
+
+        if idx >= len(sensors) or sensors[idx] is None:
+            continue
+
+        sensor = sensors[idx]
+
+        # Room name (top-left of tile)
+        draw.text((tx + 3, ty + 2), sensor["name"], fill=GREY, font=fnt_name)
+
+        if mode == 'temp':
+            val    = sensor.get("temp")
+            colour = temp_color(val)
+            unit   = "\u00b0C"   # °C
+        else:
+            val    = sensor.get("hum")
+            colour = hum_color(val)
+            unit   = "%"
+
+        if val is not None:
+            val_str = f"{val:.1f}"
+            vx, vy = tx + 3, ty + 13
+            draw.text((vx, vy), val_str, fill=colour, font=fnt_val)
+            # Place unit right after the value text
+            bbox = draw.textbbox((vx, vy), val_str, font=fnt_val)
+            draw.text((bbox[2] + 2, ty + 22), unit, fill=colour, font=fnt_unit)
+        else:
+            draw.text((tx + 3, ty + 22), "N/A", fill=(100, 100, 100), font=fnt_name)
+
+# ── Wind-field overlay (kept for reference, not used in tile mode) ────────────
 
 def draw_wind_field(draw, speed_base, dir_base, panel_w):
     """Draw a 15×9 grid of coloured wind arrows over the map area."""
     cols, rows = 15, 9
     cell_w = (WIDTH - panel_w) / cols
     cell_h = HEIGHT / rows
-    rng = np.random.default_rng(42)          # fixed seed → deterministic look
 
     for row in range(rows):
         for col in range(cols):
-            # small spatial perturbation for a flow-field feel
             noise_spd = speed_base * (0.75 + 0.5 * math.sin(col * 0.9 + row * 1.3 + 0.5))
             noise_dir = dir_base  + 18 * math.sin(col * 1.4 + row * 0.8)
 
@@ -227,14 +345,12 @@ def draw_wind_field(draw, speed_base, dir_base, panel_w):
             cx = int(panel_w + (col + 0.5) * cell_w)
             cy = int((row + 0.5) * cell_h)
 
-            # arrow length proportional to speed
             length = max(6, int(noise_spd / 5))
-            rad = math.radians(noise_dir - 180)   # direction the wind blows TO
+            rad = math.radians(noise_dir - 180)
             ex = cx + int(math.sin(rad) * length)
             ey = cy - int(math.cos(rad) * length)
 
             draw.line([(cx, cy), (ex, ey)], fill=(*colour, 200), width=2)
-            # arrowhead dot
             draw.ellipse([(ex - 2, ey - 2), (ex + 2, ey + 2)],
                          fill=(*colour, 240))
 
@@ -251,7 +367,6 @@ def draw_panel(draw, weather, panel_w):
     precip = cur.get("precipitation", 0.0)
 
     hourly = weather["hourly"]
-    h_spd  = hourly["wind_speed_10m"]
     h_gust = hourly["wind_gusts_10m"]
     gust_now = max(h_gust[:3]) if h_gust else spd * 1.6
 
@@ -328,10 +443,9 @@ def draw_panel(draw, weather, panel_w):
     draw.text((10, y), f"{PIN_LON:.3f}°E", fill=DIM, font=fnt_tiny)
     y += 11
     draw.text((10, y), "Scania, Sweden", fill=DIM, font=fnt_tiny)
-    y += 11
 
     # Timestamp
-    ts = datetime.datetime.utcnow().strftime("%d %b %H:%MZ")
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%d %b %H:%MZ")
     draw.text((10, HEIGHT - 13), ts, fill=DIM, font=fnt_tiny)
 
 # ── 24-hour wind chart ───────────────────────────────────────────────────────
@@ -378,23 +492,6 @@ def draw_hourly_chart(draw, weather, panel_w):
     draw.text((CHART_X + CHART_W + 3, CHART_Y),
               f"{int(max_spd)}", fill=GREY, font=fnt)
 
-# ── Wind-speed colour bar ────────────────────────────────────────────────────
-
-def draw_color_bar(draw):
-    BAR_X = WIDTH - 115
-    BAR_Y = HEIGHT - 50
-    BAR_W = 100
-    BAR_H = 8
-    fnt   = ImageFont.load_default(size=9)
-    GREY  = (130, 135, 160)
-
-    draw.text((BAR_X, BAR_Y - 11), "km/h", fill=GREY, font=fnt)
-    for px in range(BAR_W):
-        c = wind_color(px * 100 / BAR_W)
-        draw.line([(BAR_X + px, BAR_Y), (BAR_X + px, BAR_Y + BAR_H)], fill=c)
-    draw.text((BAR_X - 4,       BAR_Y + BAR_H + 1), "0",   fill=GREY, font=fnt)
-    draw.text((BAR_X + BAR_W - 10, BAR_Y + BAR_H + 1), "100", fill=GREY, font=fnt)
-
 # ── Pin marker ───────────────────────────────────────────────────────────────
 
 def draw_pin(draw, canvas_ox_f, canvas_oy_f):
@@ -403,7 +500,7 @@ def draw_pin(draw, canvas_ox_f, canvas_oy_f):
     px, py = _tile_float_to_pixel(px_f, py_f, canvas_ox_f, canvas_oy_f)
     cx, cy = int(px), int(py)
 
-    if PANEL_W < cx < WIDTH and 0 < cy < HEIGHT:
+    if PANEL_W < cx < WIDTH and 0 < cy < HEIGHT - TILE_AREA_H:
         r = 6
         draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)],
                      fill=(255, 60, 60, 220), outline=(255, 255, 255, 240), width=2)
@@ -431,7 +528,10 @@ def to_rgb565(img_rgb):
 
 # ── Main render ──────────────────────────────────────────────────────────────
 
-def render(weather, out_png, out_bin, out_h):
+def render(weather, sensors,
+           out_png_temp, out_bin_temp,
+           out_png_hum,  out_bin_hum,
+           out_h):
     # 1. Map background
     map_img, ox_f, oy_f = build_map_canvas(MAP_LAT, MAP_LON, ZOOM)
 
@@ -442,62 +542,62 @@ def render(weather, out_png, out_bin, out_h):
 
     draw = ImageDraw.Draw(img, "RGBA")
 
-    # 3. Wind field arrows
-    cur = weather["current"]
-    draw_wind_field(draw, cur["wind_speed_10m"], cur["wind_direction_10m"], PANEL_W)
-
-    # 4. Forecast pin
+    # 3. Forecast pin
     draw_pin(draw, ox_f, oy_f)
 
-    # 5. Data panel (drawn last so it's on top)
+    # 4. Data panel (drawn on top)
     draw_panel(draw, weather, PANEL_W)
 
-    # 6. 24-hour chart (bottom of map area)
+    # 5. 24-hour wind chart (bottom strip, y ≥ 210)
     draw_hourly_chart(draw, weather, PANEL_W)
 
-    # 7. Wind colour bar
-    draw_color_bar(draw)
-
-    # 8. Attribution
+    # 6. Attribution
     draw_attribution(draw)
 
-    # Flatten to RGB
-    img = img.convert("RGB")
+    # Flatten to RGB – base image without sensor tiles
+    base_rgb = img.convert("RGB")
 
-    # 9. PNG preview
-    img.save(out_png)
-    print(f"Preview  → {out_png}")
+    def _save_view(mode, out_png, out_bin):
+        view = base_rgb.copy()
+        d = ImageDraw.Draw(view)
+        draw_sensor_tiles(d, sensors, mode)
+        view.save(out_png)
+        print(f"Preview  → {out_png}")
+        pixels = to_rgb565(view)
+        with open(out_bin, "wb") as f:
+            for px in pixels:
+                f.write(struct.pack("<H", int(px)))
+        print(f"Binary   → {out_bin}  ({len(pixels) * 2:,} bytes)")
+        return view, pixels
 
-    # 10. RGB565 binary (little-endian, direct memcpy into STM32 framebuffer)
-    pixels = to_rgb565(img)
-    with open(out_bin, "wb") as f:
-        for px in pixels:
-            f.write(struct.pack("<H", int(px)))
-    print(f"Binary   → {out_bin}  ({len(pixels) * 2:,} bytes)")
+    img_temp, pixels_temp = _save_view('temp', out_png_temp, out_bin_temp)
+    _save_view('hum', out_png_hum, out_bin_hum)
 
-    # 11. C header (optional – skip when serving from a remote machine)
+    # C header from temperature image (used as boot Flash snapshot in firmware)
     if out_h is None:
         return
-    ts = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%MZ")
+
+    cur   = weather["current"]
+    ts    = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%MZ")
     total = WIDTH * HEIGHT
     with open(out_h, "w") as f:
         f.write("/* ------------------------------------------------------------------ *\n")
-        f.write(f" * windy_img.h  –  auto-generated by tools/windy_render.py\n")
-        f.write(f" * {ts}  |  {PIN_LAT}°N {PIN_LON}°E  |  zoom {ZOOM}\n")
-        f.write(f" * {cur['temperature_2m']}°C  "
-                f"wind {cur['wind_speed_10m']} km/h @ {cur['wind_direction_10m']}°\n")
-        f.write(" * DO NOT EDIT – re-run windy_render.py to refresh\n")
+        f.write(" * windy_img.h  --  auto-generated by tools/windy_render.py\n")
+        f.write(f" * {ts}  |  {PIN_LAT}degN {PIN_LON}degE  |  zoom {ZOOM}\n")
+        f.write(f" * {cur['temperature_2m']}degC  "
+                f"wind {cur['wind_speed_10m']} km/h @ {cur['wind_direction_10m']}deg\n")
+        f.write(" * Temperature view (boot snapshot) -- re-run windy_render.py to refresh\n")
         f.write(" * ------------------------------------------------------------------ */\n\n")
         f.write("#ifndef WINDY_IMG_H\n#define WINDY_IMG_H\n\n")
         f.write("#include <stdint.h>\n\n")
         f.write(f"#define WINDY_IMG_WIDTH  {WIDTH}U\n")
         f.write(f"#define WINDY_IMG_HEIGHT {HEIGHT}U\n")
-        f.write(f"/* {total:,} px × 2 bytes = {total*2:,} bytes in Flash .rodata */\n\n")
-        f.write("/* Placed in Flash by the linker (const → .rodata).\\n"
-                "   LTDC can read directly from Flash via AHB – no memcpy needed. */\n")
+        f.write(f"/* {total:,} px x 2 bytes = {total*2:,} bytes in Flash .rodata */\n\n")
+        f.write("/* Placed in Flash by the linker (const -> .rodata).\n")
+        f.write("   LTDC can read directly from Flash via AHB -- no memcpy needed. */\n")
         f.write(f"static const uint16_t windy_img[{total}U] = {{\n")
         PER_LINE = 16
-        for i, px in enumerate(pixels):
+        for i, px in enumerate(pixels_temp):
             if i % PER_LINE == 0:
                 f.write("    ")
             f.write(f"0x{int(px):04X}")
@@ -510,29 +610,42 @@ def render(weather, out_png, out_bin, out_h):
         if total % PER_LINE != 0:
             f.write("\n")
         f.write("};\n\n#endif /* WINDY_IMG_H */\n")
-    print(f"C header → {out_h}  ({os.path.getsize(out_h):,} bytes)")
+    print(f"C header -> {out_h}  ({os.path.getsize(out_h):,} bytes)")
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     HERE = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, HERE)
 
-    ap = argparse.ArgumentParser(description="Render Windy weather display image")
-    ap.add_argument("--out-bin", default=os.path.join(HERE, "windy_480x272.bin"),
-                    help="Output path for raw RGB565 binary (default: tools/windy_480x272.bin)")
-    ap.add_argument("--out-png", default=os.path.join(HERE, "windy_480x272.png"),
-                    help="Output path for PNG preview (default: tools/windy_480x272.png)")
+    ap = argparse.ArgumentParser(description="Render Windy weather + sensor tile images")
+    ap.add_argument("--out-bin-temp", default=os.path.join(HERE, "windy_temp.bin"),
+                    help="Output path for temperature RGB565 binary (default: tools/windy_temp.bin)")
+    ap.add_argument("--out-bin-hum",  default=os.path.join(HERE, "windy_hum.bin"),
+                    help="Output path for humidity RGB565 binary (default: tools/windy_hum.bin)")
+    ap.add_argument("--out-png-temp", default=os.path.join(HERE, "windy_temp.png"),
+                    help="Output path for temperature PNG preview (default: tools/windy_temp.png)")
+    ap.add_argument("--out-png-hum",  default=os.path.join(HERE, "windy_hum.png"),
+                    help="Output path for humidity PNG preview (default: tools/windy_hum.png)")
     ap.add_argument("--no-header", action="store_true",
                     help="Skip C header generation (use on server, not dev machine)")
     args = ap.parse_args()
 
+    from ha_config import ROOMS, HA_URL, HA_TOKEN  # noqa: E402
+
     weather = fetch_weather(PIN_LAT, PIN_LON)
+
+    print("Fetching HA sensors…")
+    sensors = fetch_ha_sensors(ROOMS, HA_URL, HA_TOKEN)
 
     render(
         weather,
-        out_png=args.out_png,
-        out_bin=args.out_bin,
-        out_h  =None if args.no_header
-                else os.path.join(HERE, "../Core/Inc/windy_img.h"),
+        sensors,
+        out_png_temp=args.out_png_temp,
+        out_bin_temp=args.out_bin_temp,
+        out_png_hum=args.out_png_hum,
+        out_bin_hum=args.out_bin_hum,
+        out_h=None if args.no_header
+              else os.path.join(HERE, "../Core/Inc/windy_img.h"),
     )
     print("Done.")

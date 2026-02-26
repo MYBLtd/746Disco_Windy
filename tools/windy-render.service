@@ -8,8 +8,10 @@ Type=oneshot
 # Run as root or a dedicated user; adjust User= if preferred
 WorkingDirectory=/opt/windy
 ExecStart=/usr/bin/python3 /opt/windy/windy_render.py \
-    --out-bin /var/lib/windy/windy.bin \
-    --out-png /var/lib/windy/windy.png \
+    --out-bin-temp /var/lib/windy/windy_temp.bin \
+    --out-bin-hum  /var/lib/windy/windy_hum.bin  \
+    --out-png-temp /var/lib/windy/windy_temp.png \
+    --out-png-hum  /var/lib/windy/windy_hum.png  \
     --no-header
 StandardOutput=journal
 StandardError=journal

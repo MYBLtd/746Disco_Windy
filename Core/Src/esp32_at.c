@@ -138,13 +138,34 @@ int esp32_init(void)
     }
 
     dbg_puts("[ESP] USART6 ready (PC6=TX PC7=RX 115200)\r\n");
+
+    /* If the ESP32 was left in transparent passthrough mode from a previous
+     * session, escape it now.  The "+++" sequence requires:
+     *   – ≥ 20 ms of silence (no TX) before the three '+' chars
+     *   – ≥ 20 ms of silence (no TX) after them
+     * We use 30 ms / 1100 ms to give plenty of margin.
+     * In normal AT mode "+++" is ignored (no CR/LF → not a complete command);
+     * the subsequent flush drains any spurious "ERROR". */
+    HAL_Delay(30);
+    HAL_UART_Transmit(&huart6, (const uint8_t *)"+++", 3, 1000);
+    HAL_Delay(1100);
+    { uint8_t dummy; while (HAL_UART_Receive(&huart6, &dummy, 1, 1) == HAL_OK) {} }
+    dbg_puts("[ESP] Escape sent (passthrough exit)\r\n");
+
+    /* "+++" exits transparent UART mode but the TCP connection stays open.
+     * Close it now so AT+CIPMUX=0 can succeed in esp32_http_get_image().
+     * Both commands may return ERROR (no connection / wrong mode) – that's fine. */
+    at_cmd("AT+CIPMODE=0", "OK", 2000);   /* clear CIPMODE=1 from last session */
+    at_cmd("AT+CIPCLOSE",  NULL, 2000);   /* close any lingering TCP socket     */
+
     return 0;
 }
 
 int esp32_connect_wifi(const char *ssid, const char *pass)
 {
-    /* Send a bare CRLF first to flush any partial command in the ESP32's
-       UART buffer (can cause the first real command to return ERROR). */
+    /* Send a bare CRLF to flush any partial command left in the ESP32's
+       AT input buffer (can cause the first real command to return ERROR).
+       This is safe because esp32_init() already exited passthrough mode. */
     esp_send("\r\n");
     HAL_Delay(100);
     { uint8_t dummy; while (HAL_UART_Receive(&huart6, &dummy, 1, 1) == HAL_OK) {} }
@@ -329,18 +350,24 @@ int esp32_http_get_image(const char *host, uint16_t port, const char *path,
      * 1. Scan header bytes for the \r\n\r\n terminator.
      * 2. Once found, write every byte directly into SDRAM at dst_addr.
      * ─────────────────────────────────────────────────────────────────── */
-    uint8_t *dst      = (uint8_t *)dst_addr;
-    uint32_t body_len = 0;
-    int      hdr_done = 0;
-    uint8_t  tail[4]  = {0, 0, 0, 0};   /* rolling window for \r\n\r\n   */
-    uint32_t deadline = HAL_GetTick() + 90000UL;  /* 90 s hard limit      */
+    uint8_t *dst       = (uint8_t *)dst_addr;
+    uint32_t body_len  = 0;
+    int      hdr_done  = 0;
+    uint8_t  tail[4]   = {0, 0, 0, 0};   /* rolling window for \r\n\r\n   */
+    uint32_t deadline  = HAL_GetTick() + 90000UL;  /* 90 s hard limit      */
+    uint32_t last_byte = HAL_GetTick();   /* tracks idle time               */
 
     while (body_len < expected_bytes && HAL_GetTick() < deadline) {
         uint8_t b;
-        /* 2 ms idle timeout – short enough to exit quickly when the
-         * connection closes, but long enough not to spin-burn the CPU */
-        if (HAL_UART_Receive(&huart6, &b, 1, 2) != HAL_OK)
+        if (HAL_UART_Receive(&huart6, &b, 1, 2) != HAL_OK) {
+            /* When the server closes the connection, the ESP32 emits
+             * "\r\nCLOSED\r\n" then goes silent.  Exit if no byte
+             * has arrived for 3 s so a 404/error doesn't stall for 90 s. */
+            if (HAL_GetTick() - last_byte >= 3000UL)
+                break;
             continue;
+        }
+        last_byte = HAL_GetTick();
 
         if (!hdr_done) {
             tail[0] = tail[1]; tail[1] = tail[2]; tail[2] = tail[3]; tail[3] = b;

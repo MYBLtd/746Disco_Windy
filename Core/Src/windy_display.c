@@ -65,7 +65,7 @@ static LTDC_HandleTypeDef  hltdc;
 static DMA2D_HandleTypeDef hdma2d;
 
 /* Tracks which SDRAM buffer LTDC is currently scanning */
-static uint32_t s_active = LCD_FRAME_BUFFER;
+static uint32_t s_active = LCD_BUF_SNAP;
 
 /* ── GPIO init (shared between show() and init_sdram()) ─────────────── */
 static void ltdc_gpio_init(void)
@@ -206,14 +206,14 @@ int windy_display_show(void)
 
 int windy_display_init_sdram(void)
 {
-    /* Copy static map image from Flash to SDRAM framebuffer */
-    memcpy((void *)LCD_FRAME_BUFFER, windy_img,
+    /* Copy static map image from Flash to SDRAM snap buffer */
+    memcpy((void *)LCD_BUF_SNAP, windy_img,
            WINDY_IMG_WIDTH * WINDY_IMG_HEIGHT * sizeof(uint16_t));
 
-    s_active = LCD_FRAME_BUFFER;
+    s_active = LCD_BUF_SNAP;
     ltdc_gpio_init();
     dma2d_init();
-    return ltdc_init(LCD_FRAME_BUFFER);
+    return ltdc_init(LCD_BUF_SNAP);
 }
 
 /* ── Double-buffer API ───────────────────────────────────────────────────── */
@@ -225,12 +225,19 @@ uint32_t windy_display_front_addr(void)
 
 uint32_t windy_display_back_addr(void)
 {
-    return (s_active == LCD_FRAME_BUFFER) ? LCD_BACK_BUFFER : LCD_FRAME_BUFFER;
+    return (s_active == LCD_BUF_SNAP) ? LCD_BUF_TEMP : LCD_BUF_SNAP;
+}
+
+void windy_display_set_addr(uint32_t addr)
+{
+    s_active = addr;
+    HAL_LTDC_SetAddress(&hltdc, addr, 0);
 }
 
 void windy_display_flip(void)
 {
-    s_active = (s_active == LCD_FRAME_BUFFER) ? LCD_BACK_BUFFER : LCD_FRAME_BUFFER;
+    uint32_t next = (s_active == LCD_BUF_SNAP) ? LCD_BUF_TEMP : LCD_BUF_SNAP;
+    s_active = next;
     HAL_LTDC_SetAddress(&hltdc, s_active, 0);
 }
 
@@ -248,12 +255,12 @@ static int wind_beaufort(float ms)
 
 void windy_display_update_panel(const WeatherData *wd)
 {
-    uint16_t *fb = (uint16_t *)LCD_FRAME_BUFFER;
+    uint16_t *fb = (uint16_t *)s_active;
     char line[32];
     int  x = PANEL_X + 4;
 
     /* ── 1. Clear panel ── */
-    fill_rect(LCD_FRAME_BUFFER, PANEL_X, 0, PANEL_W, PANEL_H, COL_PANEL_BG);
+    fill_rect(s_active, PANEL_X, 0, PANEL_W, PANEL_H, COL_PANEL_BG);
 
     /* ── 2. Temperature – 3x scale (24×36 px per char, 6 chars = 144 px) ── */
     {
