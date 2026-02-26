@@ -24,6 +24,7 @@ Run:
   python3 windy_render.py
 """
 
+import argparse
 import math
 import struct
 import time
@@ -474,7 +475,9 @@ def render(weather, out_png, out_bin, out_h):
             f.write(struct.pack("<H", int(px)))
     print(f"Binary   → {out_bin}  ({len(pixels) * 2:,} bytes)")
 
-    # 11. C header
+    # 11. C header (optional – skip when serving from a remote machine)
+    if out_h is None:
+        return
     ts = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%MZ")
     total = WIDTH * HEIGHT
     with open(out_h, "w") as f:
@@ -514,12 +517,22 @@ def render(weather, out_png, out_bin, out_h):
 if __name__ == "__main__":
     HERE = os.path.dirname(os.path.abspath(__file__))
 
+    ap = argparse.ArgumentParser(description="Render Windy weather display image")
+    ap.add_argument("--out-bin", default=os.path.join(HERE, "windy_480x272.bin"),
+                    help="Output path for raw RGB565 binary (default: tools/windy_480x272.bin)")
+    ap.add_argument("--out-png", default=os.path.join(HERE, "windy_480x272.png"),
+                    help="Output path for PNG preview (default: tools/windy_480x272.png)")
+    ap.add_argument("--no-header", action="store_true",
+                    help="Skip C header generation (use on server, not dev machine)")
+    args = ap.parse_args()
+
     weather = fetch_weather(PIN_LAT, PIN_LON)
 
     render(
         weather,
-        out_png=os.path.join(HERE, "windy_480x272.png"),
-        out_bin=os.path.join(HERE, "windy_480x272.bin"),
-        out_h  =os.path.join(HERE, "../Core/Inc/windy_img.h"),
+        out_png=args.out_png,
+        out_bin=args.out_bin,
+        out_h  =None if args.no_header
+                else os.path.join(HERE, "../Core/Inc/windy_img.h"),
     )
     print("Done.")

@@ -1,52 +1,101 @@
 /**
  * @file  main.c
- * @brief STM32F746G-DISCO – Windy.com weather display
+ * @brief STM32F746G-DISCO – Windy.com live weather display (Pad A)
  *
- * Boot sequence
- *   1. HAL_Init()            – SysTick @ 1 ms
- *   2. SystemClock_Config()  – 216 MHz SYSCLK + PLLSAI 9.6 MHz LTDC pixel clock
- *   3. windy_display_show()  – LTDC pointed at embedded RGB565 weather image
- *   4. idle loop             – image displayed indefinitely
+ * Boot sequence:
+ *   1. HAL_Init + SystemClock_Config (216 MHz, PLLSAI 9.6 MHz for LTDC)
+ *   2. SDRAM_Init (IS42S32400F, 16-bit bus)
+ *   3. windy_display_init_sdram – copy Flash snapshot → SDRAM, start LTDC
+ *   4. esp32_init + esp32_connect_wifi
+ *   5. Image download loop (10-minute refresh):
+ *        esp32_http_get_image → back buffer → flip → delay
  *
- * To refresh the image:
- *   cd tools && python3 windy_render.py   # fetches live data, regenerates windy_img.h
- *   make && st-flash write build/display_test.bin 0x08000000
+ * The server (Debian 12) runs tools/windy_render.py every 10 minutes via
+ * a systemd timer and serves windy.bin over HTTP on IMAGE_PORT.
+ * Edit IMAGE_HOST in weather_config.h to point at your server.
  */
 
 #include "main.h"
+#include "sdram.h"
 #include "windy_display.h"
+#include "esp32_at.h"
+#include "weather_config.h"
+#include "font_draw.h"
+#include "dbg_uart.h"
 
 static void SystemClock_Config(void);
+static void show_status(const char *msg);
 
 int main(void)
 {
     HAL_Init();
     SystemClock_Config();
+    dbg_uart_init();
+    dbg_puts("\r\n=== Windy Weather Display (Pad A) ===\r\n");
 
-    if (windy_display_show() != 0)
+    dbg_puts("[BOOT] SDRAM init...\r\n");
+    if (SDRAM_Init() != HAL_OK) {
+        dbg_puts("[BOOT] SDRAM FAILED\r\n");
         Error_Handler();
+    }
 
-    /* Image is now live on the LCD.  The LTDC refreshes it autonomously
-       from Flash; the CPU has nothing further to do. */
-    while (1)
-    {
-        __WFI();   /* wait-for-interrupt: sleep until SysTick wakes us */
+    dbg_puts("[BOOT] Display init...\r\n");
+    if (windy_display_init_sdram() != 0) {
+        dbg_puts("[BOOT] Display FAILED\r\n");
+        Error_Handler();
+    }
+    dbg_puts("[BOOT] Display OK – showing Flash snapshot\r\n");
+
+    /* ── WiFi connect ── */
+    show_status("ESP32 init...");
+    if (esp32_init() != 0) {
+        show_status("UART init failed!");
+        dbg_puts("[BOOT] ESP32 UART init failed\r\n");
+    } else {
+        show_status("Connecting WiFi...");
+        if (esp32_connect_wifi(WIFI_SSID, WIFI_PASS) != 0) {
+            show_status("WiFi failed");
+            dbg_puts("[BOOT] WiFi connect failed\r\n");
+        } else {
+            dbg_puts("[BOOT] WiFi OK\r\n");
+        }
+    }
+
+    /* ── Image download loop ── */
+    for (;;) {
+        uint32_t back = windy_display_back_addr();
+        show_status("Downloading...");
+        dbg_printf("[IMG] Downloading to back buffer 0x%08lX\r\n", back);
+
+        int rc = esp32_http_get_image(IMAGE_HOST, IMAGE_PORT, IMAGE_PATH,
+                                      back, 480U * 272U * 2U);
+        if (rc == 0) {
+            windy_display_flip();
+            show_status("OK");
+            dbg_puts("[IMG] Display updated\r\n");
+        } else {
+            show_status("Download failed");
+            dbg_puts("[IMG] Download failed, retrying in 30 s\r\n");
+            HAL_Delay(30000UL);
+            continue;
+        }
+
+        HAL_Delay(WEATHER_REFRESH_MS);
     }
 }
 
-/**
- * @brief  Configure system clocks.
- *
- * Source  : HSE 25 MHz
- * SYSCLK  : 216 MHz  (PLL M=25 N=432 P=2)
- * AHB     : 216 MHz
- * APB1    : 54 MHz  (/4)
- * APB2    : 108 MHz (/2)
- *
- * LTDC clock via PLLSAI:
- *   PLLSAI N=192, R=5 → PLLSAI_VCO = 192 MHz
- *   PLLSAIDIVR = /4   → LTDC_CLK   = 9.6 MHz  (panel spec: 9 MHz ± 10%)
- */
+/* ── Status line: bottom-left corner of the currently displayed buffer ── */
+static void show_status(const char *msg)
+{
+    uint16_t *fb = (uint16_t *)windy_display_front_addr();
+    int y = 272 - 12 - 2;
+    for (int row = y; row < 272; row++)
+        for (int col = 0; col < 150; col++)
+            fb[row * 480 + col] = 0x0010u;
+    font_draw_string(fb, 4, y, msg, 0x07FFu, 0x0010u);
+}
+
+/* ── Clock configuration (same as before) ────────────────────────────── */
 static void SystemClock_Config(void)
 {
     RCC_OscInitTypeDef RCC_OscInit = {0};
@@ -67,7 +116,6 @@ static void SystemClock_Config(void)
     if (HAL_RCC_OscConfig(&RCC_OscInit) != HAL_OK)
         Error_Handler();
 
-    /* Activate Over-Drive for 216 MHz */
     if (HAL_PWREx_EnableOverDrive() != HAL_OK)
         Error_Handler();
 
@@ -80,7 +128,6 @@ static void SystemClock_Config(void)
     if (HAL_RCC_ClockConfig(&RCC_ClkInit, FLASH_LATENCY_7) != HAL_OK)
         Error_Handler();
 
-    /* PLLSAI for LTDC */
     PeriphClkInit.PeriphClockSelection  = RCC_PERIPHCLK_LTDC;
     PeriphClkInit.PLLSAI.PLLSAIN        = 192;
     PeriphClkInit.PLLSAI.PLLSAIR        = 5;
@@ -89,7 +136,7 @@ static void SystemClock_Config(void)
         Error_Handler();
 }
 
-/* ── HAL callbacks ───────────────────────────────────────────────── */
+/* ── HAL callbacks ────────────────────────────────────────────────────── */
 
 void HAL_MspInit(void)
 {

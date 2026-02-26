@@ -18,6 +18,7 @@
 #define HAL_LTDC_MODULE_ENABLED
 #define HAL_DMA2D_MODULE_ENABLED
 #define HAL_SDRAM_MODULE_ENABLED
+#define HAL_UART_MODULE_ENABLED
 
 /* ── HSE / HSI / LSE values ──────────────────────────────────────── */
 #if !defined(HSE_VALUE)
@@ -71,6 +72,7 @@
 #include "stm32f7xx_hal_ltdc.h"
 #include "stm32f7xx_hal_dma2d.h"
 #include "stm32f7xx_hal_sdram.h"
+#include "stm32f7xx_hal_uart.h"
 
 /* assert_param is a no-op for this test */
 #define assert_param(expr)  ((void)0U)

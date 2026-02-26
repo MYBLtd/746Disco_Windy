@@ -1,0 +1,15 @@
+[Unit]
+Description=Windy display – render weather image
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Run as root or a dedicated user; adjust User= if preferred
+WorkingDirectory=/opt/windy
+ExecStart=/usr/bin/python3 /opt/windy/windy_render.py \
+    --out-bin /var/lib/windy/windy.bin \
+    --out-png /var/lib/windy/windy.png \
+    --no-header
+StandardOutput=journal
+StandardError=journal

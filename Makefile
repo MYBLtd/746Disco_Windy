@@ -50,6 +50,11 @@ APP_C_SRCS = \
     Core/Src/main.c \
     Core/Src/windy_display.c \
     Core/Src/stm32f7xx_it.c \
+    Core/Src/sdram.c \
+    Core/Src/esp32_at.c \
+    Core/Src/weather_data.c \
+    Core/Src/font_draw.c \
+    Core/Src/dbg_uart.c \
     display_test.c
 
 # ── HAL source files (only what we use) ───────────────────────────
@@ -67,6 +72,8 @@ HAL_C_SRCS = \
     $(HAL_DIR)/Src/stm32f7xx_hal_ltdc.c \
     $(HAL_DIR)/Src/stm32f7xx_hal_dma2d.c \
     $(HAL_DIR)/Src/stm32f7xx_hal_sdram.c \
+    $(HAL_DIR)/Src/stm32f7xx_hal_uart.c \
+    $(HAL_DIR)/Src/stm32f7xx_hal_uart_ex.c \
     $(HAL_DIR)/Src/stm32f7xx_ll_fmc.c \
     $(CMSIS_DEV)/Source/Templates/system_stm32f7xx.c
 
@@ -96,6 +103,7 @@ LDFLAGS  = $(ARCH) \
            -specs=nano.specs \
            -specs=nosys.specs \
            -Wl,--gc-sections \
+           -Wl,-u,_printf_float \
            -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref \
            -lc -lm
 
@@ -133,11 +141,17 @@ FLASH_ADDR  = 0x08000000
 
 .PHONY: flash
 
-flash: $(BUILD_DIR)/$(TARGET).bin
+flash: $(BUILD_DIR)/$(TARGET).elf
 ifeq ($(FLASH_TOOL),openocd)
-	openocd -f interface/stlink.cfg \
-	        -f target/stm32f7x.cfg \
-	        -c "program $(BUILD_DIR)/$(TARGET).elf verify reset exit"
+	# Connect to the already-running OpenOCD (tunnelled to localhost:13333)
+	gdb-multiarch -q $< \
+	  -ex "set architecture armv7e-m" \
+	  -ex "target extended-remote localhost:13333" \
+	  -ex "monitor reset init" \
+	  -ex "load" \
+	  -ex "monitor reset run" \
+	  -ex "detach" \
+	  -ex "quit"
 else
-	st-flash --reset write $< $(FLASH_ADDR)
+	st-flash --reset write $(BUILD_DIR)/$(TARGET).bin $(FLASH_ADDR)
 endif

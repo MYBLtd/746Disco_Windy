@@ -1,0 +1,12 @@
+[Unit]
+Description=Windy display – refresh image every 10 minutes
+Requires=windy-render.service
+
+[Timer]
+# Run 30 s after boot, then every 10 minutes
+OnBootSec=30
+OnUnitActiveSec=10min
+Unit=windy-render.service
+
+[Install]
+WantedBy=timers.target

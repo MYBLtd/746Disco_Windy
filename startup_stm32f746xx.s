@@ -25,6 +25,18 @@ Reset_Handler:
   /* Set stack pointer (redundant after vector table load, but safe) */
   ldr   sp, =_estack
 
+  /* Enable FPU before any C code runs.
+   * Write CP10/CP11 = 0b11 (full access) in SCB->CPACR (0xE000ED88).
+   * SystemInit in system_stm32f7xx.c does this conditionally, but the
+   * conditional can silently evaluate to false if __FPU_USED isn't set.
+   * Doing it here unconditionally guarantees VFP instructions don't fault. */
+  ldr   r0, =0xE000ED88
+  ldr   r1, [r0]
+  orr   r1, r1, #(0xF << 20)
+  str   r1, [r0]
+  dsb
+  isb
+
   /* Copy .data from Flash to SRAM1 */
   ldr   r0, =_sdata
   ldr   r1, =_edata

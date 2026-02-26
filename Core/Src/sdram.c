@@ -5,8 +5,8 @@
  * Hardware:
  *   IS42S32400F  –  4M × 32-bit × 4 banks  =  8 MB
  *   FMC Bank 1 SDRAM  at 0xC0000000
- *   32-bit data bus
- *   12-bit row address, 9-bit column address
+ *   16-bit data bus (DQ16-DQ31 are NC on the DISCO board)
+ *   12-bit row address, 8-bit column address
  *   CAS latency 3
  *   SDCLK = HCLK/2 = 108 MHz  → t_SDCLK ≈ 9.26 ns
  *
@@ -52,9 +52,9 @@ HAL_StatusTypeDef SDRAM_Init(void)
     /* ── SDRAM controller config ─────────────────────────────────── */
     hsdram.Instance                = FMC_SDRAM_DEVICE;
     hsdram.Init.SDBank             = FMC_SDRAM_BANK1;
-    hsdram.Init.ColumnBitsNumber   = FMC_SDRAM_COLUMN_BITS_NUM_9;
+    hsdram.Init.ColumnBitsNumber   = FMC_SDRAM_COLUMN_BITS_NUM_8;
     hsdram.Init.RowBitsNumber      = FMC_SDRAM_ROW_BITS_NUM_12;
-    hsdram.Init.MemoryDataWidth    = FMC_SDRAM_MEM_BUS_WIDTH_32;
+    hsdram.Init.MemoryDataWidth    = FMC_SDRAM_MEM_BUS_WIDTH_16;
     hsdram.Init.InternalBankNumber = FMC_SDRAM_INTERN_BANKS_NUM_4;
     hsdram.Init.CASLatency         = FMC_SDRAM_CAS_LATENCY_3;
     hsdram.Init.WriteProtection    = FMC_SDRAM_WRITE_PROTECTION_DISABLE;
@@ -118,7 +118,6 @@ static void fmc_gpio_init(void)
     __HAL_RCC_GPIOF_CLK_ENABLE();
     __HAL_RCC_GPIOG_CLK_ENABLE();
     __HAL_RCC_GPIOH_CLK_ENABLE();
-    __HAL_RCC_GPIOI_CLK_ENABLE();
 
     g.Mode      = GPIO_MODE_AF_PP;
     g.Pull      = GPIO_NOPULL;
@@ -152,19 +151,10 @@ static void fmc_gpio_init(void)
             GPIO_PIN_8 | GPIO_PIN_15;
     HAL_GPIO_Init(GPIOG, &g);
 
-    /* PH2,3,5 – FMC_SDCKE0(alt), FMC_SDNE0, FMC_SDNWE */
-    g.Pin = GPIO_PIN_2 | GPIO_PIN_3 | GPIO_PIN_5 ;
+    /* PH3=FMC_SDNE0, PH5=FMC_SDNWE
+     * DQ16-DQ31 (PH8-PH15, PI0-PI7) are NOT connected on DISCO — 16-bit bus */
+    g.Pin = GPIO_PIN_3 | GPIO_PIN_5;
     HAL_GPIO_Init(GPIOH, &g);
-
-    /* PH8..15, PI0..9 – FMC_D16..D31 */
-    g.Pin = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10| GPIO_PIN_11|
-            GPIO_PIN_12| GPIO_PIN_13| GPIO_PIN_14| GPIO_PIN_15;
-    HAL_GPIO_Init(GPIOH, &g);
-
-    g.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3 |
-            GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 |
-            GPIO_PIN_9 | GPIO_PIN_10;
-    HAL_GPIO_Init(GPIOI, &g);
 }
 
 /* ── Command helper ──────────────────────────────────────────────── */
